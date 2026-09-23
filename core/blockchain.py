@@ -2,8 +2,12 @@ import json
 import os
 import time
 
-from block import BLOCK_REWARD, Block, merkle_root
-from transaction import Transaction
+from core.block import BLOCK_REWARD, Block, merkle_root
+from core.transaction import Transaction
+
+
+class BlockchainValidationError(ValueError):
+    pass
 
 
 class Blockchain:
@@ -102,31 +106,36 @@ class Blockchain:
 
     def _validate_block_structure(self, block, previous_hash, expected_index):
         if block is None:
-            return False
+            raise BlockchainValidationError("block is None")
         if block.index != expected_index:
-            return False
+            raise BlockchainValidationError(f"block index mismatch: expected {expected_index}, got {block.index}")
         if block.previous_hash != previous_hash:
-            return False
+            raise BlockchainValidationError("previous_hash mismatch")
         if block.hash != block.calculate_hash():
-            return False
+            raise BlockchainValidationError("block hash does not match calculated hash")
         if not block.hash.startswith("0" * block.difficulty):
-            return False
+            raise BlockchainValidationError(f"block does not satisfy difficulty target {block.difficulty}")
         if block.merkle_root != merkle_root(block.transactions):
-            return False
+            raise BlockchainValidationError("merkle root mismatch")
         return True
 
     def validate_block(self, block):
-        previous_hash = self.blocks[-1].hash if self.blocks else "0" * 64
-        if not self._validate_block_structure(block, previous_hash, len(self.blocks)):
-            return False
-
-        balances = self.get_balances_snapshot(self.blocks)
-        sender_nonces = self.get_sender_nonces(self.blocks) or {}
-        return self._apply_block_transactions(block, balances, sender_nonces)
+        try:
+            previous_hash = self.blocks[-1].hash if self.blocks else "0" * 64
+            self._validate_block_structure(block, previous_hash, len(self.blocks))
+            balances = self.get_balances_snapshot(self.blocks)
+            sender_nonces = self.get_sender_nonces(self.blocks) or {}
+            valid = self._apply_block_transactions(block, balances, sender_nonces)
+            if not valid:
+                return False, "block transactions are invalid for current chain state"
+            return True, None
+        except BlockchainValidationError as exc:
+            return False, str(exc)
 
     def add_block(self, block):
-        if not self.validate_block(block):
-            raise ValueError("Invalid block")
+        valid, reason = self.validate_block(block)
+        if not valid:
+            raise ValueError(reason)
         self.blocks.append(block)
         if len(self.blocks) % self.difficulty_adjustment_interval == 0:
             self.adjust_difficulty()
@@ -155,26 +164,46 @@ class Blockchain:
         self.add_block(block)
         return block
 
-    def validate_chain(self):
-        if not self.blocks:
-            return False
-        if self.blocks[0].index != 0:
-            return False
-        if self.blocks[0].previous_hash != "0" * 64:
-            return False
-        if self.blocks[0].transactions:
-            return False
+    def _is_valid_chain(self, blocks):
+        if not blocks:
+            return False, "chain is empty"
+        if blocks[0].index != 0:
+            return False, "genesis block index is not 0"
+        if blocks[0].previous_hash != "0" * 64:
+            return False, "genesis previous_hash is invalid"
+        if blocks[0].transactions:
+            return False, "genesis block must be empty"
 
         balances = {}
         sender_nonces = {}
-        for idx, block in enumerate(self.blocks):
-            previous_hash = self.blocks[idx - 1].hash if idx > 0 else "0" * 64
-            if not self._validate_block_structure(block, previous_hash, idx):
-                return False
+        for idx, block in enumerate(blocks):
+            previous_hash = blocks[idx - 1].hash if idx > 0 else "0" * 64
+            try:
+                self._validate_block_structure(block, previous_hash, idx)
+            except BlockchainValidationError as exc:
+                return False, str(exc)
             if not self._apply_block_transactions(block, balances, sender_nonces):
-                return False
+                return False, "transaction validation failed while replaying chain"
 
-        return True
+        return True, None
+
+    def validate_chain(self):
+        return self._is_valid_chain(self.blocks)
+
+    def total_work(self, blocks=None):
+        chain = blocks if blocks is not None else self.blocks
+        return sum((2 ** max(1, block.difficulty)) for block in chain)
+
+    def replace_chain(self, candidate_blocks):
+        if not candidate_blocks:
+            return False, "candidate chain is empty"
+        valid, reason = self._is_valid_chain(candidate_blocks)
+        if not valid:
+            return False, reason
+        if self.total_work(candidate_blocks) <= self.total_work(self.blocks):
+            return False, "candidate chain has insufficient total work"
+        self.blocks = candidate_blocks
+        return True, "chain replaced successfully"
 
     def balance_of(self, address):
         return self.get_balances_snapshot(self.blocks).get(address, 0)
@@ -247,19 +276,19 @@ class Blockchain:
         if len(self.blocks) < self.difficulty_adjustment_interval:
             return self.difficulty
 
-        recent = self.blocks[-self.difficulty_adjustment_interval:]
-        if len(recent) < 2:
-            return self.difficulty
+        latest = self.blocks[-1]
+        previous = self.blocks[-self.difficulty_adjustment_interval]
+        elapsed = latest.timestamp - previous.timestamp
+        if elapsed <= 0:
+            elapsed = self.target_block_time
 
-        total_time = recent[-1].timestamp - recent[0].timestamp
-        if total_time <= 0:
-            return self.difficulty
+        if elapsed < self.target_block_time:
+            self.difficulty += 1
+        elif elapsed > self.target_block_time:
+            self.difficulty = max(1, self.difficulty - 1)
 
-        average_time = total_time / (len(recent) - 1)
-        expected_time = self.target_block_time * (len(recent) - 1)
-        ratio = expected_time / max(average_time, 1)
-        self.difficulty = max(1, int(self.difficulty * ratio))
-        for block in recent:
-            block.difficulty = self.difficulty
-            block.header["difficulty"] = self.difficulty
+        if any(block.difficulty != self.difficulty for block in self.blocks[-self.difficulty_adjustment_interval:]):
+            for block in self.blocks[-self.difficulty_adjustment_interval:]:
+                block.difficulty = self.difficulty
+
         return self.difficulty

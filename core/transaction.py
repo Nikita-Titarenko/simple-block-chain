@@ -1,4 +1,5 @@
 import json
+import re
 
 from ecdsa import SECP256k1, VerifyingKey
 
@@ -12,6 +13,12 @@ class Transaction:
         self.nonce = nonce
         self.signature = signature
         self.public_key_hex = public_key_hex
+
+    @staticmethod
+    def is_valid_address(address):
+        if not isinstance(address, str):
+            return False
+        return bool(re.fullmatch(r"[0-9a-fA-F]{64}", address))
 
     @staticmethod
     def from_dict(data):

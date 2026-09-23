@@ -1,6 +1,6 @@
 import json
 
-from ecdsa import VerifyingKey, SECP256k1
+from ecdsa import SECP256k1, VerifyingKey
 
 
 class Mempool:

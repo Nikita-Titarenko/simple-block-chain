@@ -1,30 +1,19 @@
-from mempool import Mempool
-from wallet import Wallet
+import time
+
+from network.node import Node
 
 
 if __name__ == "__main__":
-    wallet_sender = Wallet()
-    wallet_recipient = Wallet()
+    import argparse
 
-    current_balance = 100.0
-    current_nonce = 0
-    chain_transactions = []
+    parser = argparse.ArgumentParser(description="Run a blockchain node")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--peers", default="", help="Comma-separated peer URLs, e.g. http://127.0.0.1:5002,http://127.0.0.1:5003")
+    parser.add_argument("--difficulty", type=int, default=1)
+    args = parser.parse_args()
 
-    mempool = Mempool()
-
-    tx = wallet_sender.create_transaction(
-        recipient=wallet_recipient.address,
-        amount=30.0,
-        fee=1.0,
-        nonce=0
-    )
-
-    success, message = mempool.add_transaction(
-        tx=tx,
-        sender_public_key_hex=wallet_sender.get_public_key_hex(),
-        current_balance=current_balance,
-        current_nonce=current_nonce,
-        chain_txs=chain_transactions
-    )
-
-    print(f"Status: {success}, Message: {message}")
+    peers = [peer.strip() for peer in args.peers.split(",") if peer.strip()]
+    node = Node(port=args.port, peers=peers, difficulty=args.difficulty)
+    print(f"node started on {args.port}")
+    while True:
+        time.sleep(1)
