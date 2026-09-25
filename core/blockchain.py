@@ -386,10 +386,6 @@ class Blockchain:
         elif elapsed > self.target_block_time:
             self.difficulty = max(1, self.difficulty - 1)
 
-        if any(block.difficulty != self.difficulty for block in self.blocks[-self.difficulty_adjustment_interval:]):
-            for block in self.blocks[-self.difficulty_adjustment_interval:]:
-                block.difficulty = self.difficulty
-
         if self.difficulty != original_difficulty:
             self.save_to_file()
 
