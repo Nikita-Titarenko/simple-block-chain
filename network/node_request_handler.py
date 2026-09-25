@@ -5,6 +5,13 @@ from core.transaction import Transaction
 
 
 class NodeRequestHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_GET(self):
         node = self.server.node
         if self.path == "/status":
@@ -15,6 +22,10 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 "peers": node.peers,
                 "last_hash": node.blockchain.blocks[-1].hash if node.blockchain.blocks else None,
             })
+            return
+
+        if self.path == "/addresses":
+            self._send_json(200, {"addresses": sorted(node.known_addresses())})
             return
 
         if self.path == "/chain/validate":
@@ -37,6 +48,9 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             address = params.get("address")
             if not address:
                 self._send_json(400, {"accepted": False, "reason": "address query parameter is required"})
+                return
+            if not node.address_exists(address):
+                self._send_json(404, {"accepted": False, "reason": "address not found"})
                 return
             balance = node.blockchain.balance_of(address)
             self._send_json(200, {"address": address, "balance": balance})
@@ -84,16 +98,18 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
                 if not miner:
                     self._send_json(400, {"accepted": False, "reason": "miner address is required"})
                     return
-                known_wallets = {
-                    wallet["address"] if isinstance(wallet, dict) else wallet.address
-                    for wallet in getattr(node, "wallets", [])
-                }
-                if miner not in known_wallets:
-                    self._send_json(400, {"accepted": False, "reason": "miner address is not a known wallet"})
-                    return
                 txs = list(node.mempool)
                 block = node.mine_block(miner, txs)
                 self._send_json(200, {"accepted": True, "reason": "block mined successfully", "block": node._serialize_block(block)})
+                return
+            except Exception as exc:
+                self._send_json(400, {"accepted": False, "reason": str(exc)})
+                return
+
+        if self.path == "/sync":
+            try:
+                result = node.sync_with_peers()
+                self._send_json(200, result if isinstance(result, dict) else {"accepted": bool(result), "reason": "sync failed"})
                 return
             except Exception as exc:
                 self._send_json(400, {"accepted": False, "reason": str(exc)})
@@ -128,13 +144,13 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
-    def log_message(self, format, *args):
-        return
-
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

@@ -1,0 +1,28 @@
+﻿{
+      "difficulty": 1,
+      "hash": "0b0dc45886b3192e62ffa26183676e2cbb712b47462adab97b0e34efd840d413",
+      "index": 2,
+      "merkle_root": "56d0bb4979c0627640feeab50d7025ad95a40903eb9f516b9a95dc6b55bd9bee",
+      "nonce": 20,
+      "previous_hash": "0b3ffdb9c9d1a5db2525b9b2f02311f129552ab63d4ec98bfb41de6832ce3b28",
+      "timestamp": 1790239812,
+      "transactions": [
+        {
+          "amount": 51,
+          "fee": 0,
+          "nonce": 0,
+          "recipient": "907ba938752ccae947411d8b07ef50d116041273481ffde25d717063d840abd4",
+          "sender": "coinbase",
+          "signature": null
+        },
+        {
+          "amount": 20,
+          "fee": 1,
+          "nonce": 0,
+          "public_key_hex": "bfdf476522e42f8902f9f98ce39cb4c942f22c92e357a73765a0491ac3905f8a56d657cd672a7359154c0e12bd527979cb1de6de8d36153c73460aeaae1b9efc",
+          "recipient": "cf5aa0115b4a32a9f87160f01f0c2c1b9e5aadb8d62f7c6b21c43debc81d2c7b",
+          "sender": "907ba938752ccae947411d8b07ef50d116041273481ffde25d717063d840abd4",
+          "signature": "a24d312d4a539554fb6acfecd23949dca65f821e6371022368f645111ecffe5fe8eed92dac088779070dcced86a2642f01a0784c23c1595c2bd40765b060aa22"
+        }
+      ]
+    }

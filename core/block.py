@@ -60,7 +60,8 @@ class Block:
         self.hash = self.calculate_hash()
 
     def calculate_hash(self):
-        return hashlib.sha256(str(self.header).encode("utf-8")).hexdigest()
+        payload = json.dumps(self.header, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def mine(self):
         target_prefix = "0" * self.difficulty

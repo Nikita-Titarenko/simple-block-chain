@@ -1,3 +1,4 @@
+import sys
 import time
 
 from network.node import Node
@@ -14,6 +15,7 @@ if __name__ == "__main__":
 
     peers = [peer.strip() for peer in args.peers.split(",") if peer.strip()]
     node = Node(port=args.port, peers=peers, difficulty=args.difficulty)
-    print(f"node started on {args.port}")
+    if sys.stdout is not None:
+        print(f"node started on {args.port}")
     while True:
         time.sleep(1)

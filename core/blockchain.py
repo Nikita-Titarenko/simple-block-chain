@@ -1,6 +1,8 @@
 import json
 import os
+import tempfile
 import time
+import uuid
 
 from core.block import BLOCK_REWARD, Block, merkle_root
 from core.transaction import Transaction
@@ -10,18 +12,71 @@ class BlockchainValidationError(ValueError):
     pass
 
 
+class ValidationResult(tuple):
+    def __new__(cls, valid, reason=None):
+        return super().__new__(cls, (bool(valid), reason))
+
+    def __bool__(self):
+        return bool(self[0])
+
+
 class Blockchain:
+    MAX_BLOCK_TRANSACTIONS = 10
+    MAX_BLOCK_SIZE = 4096
+
     def __init__(self, difficulty=1, difficulty_adjustment_interval=10, target_block_time=10, chain_path=None):
         self.difficulty = difficulty
         self.difficulty_adjustment_interval = difficulty_adjustment_interval
         self.target_block_time = target_block_time
-        self.chain_path = chain_path or "blockchain.json"
+        self.chain_path = chain_path
+        if self.chain_path is None:
+            self.chain_path = os.path.join(tempfile.gettempdir(), f"blockchain_{uuid.uuid4().hex}.json")
         self.blocks = []
 
         if os.path.exists(self.chain_path):
             self.load_from_file()
         else:
             self.create_genesis_block()
+
+    def _serialize_transaction_for_size(self, tx):
+        return json.dumps(tx.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    def select_transactions_for_block(self, transactions):
+        grouped = {}
+        for tx in list(transactions):
+            if getattr(tx, "sender", None) == "coinbase":
+                continue
+            grouped.setdefault(tx.sender, []).append(tx)
+
+        sender_groups = []
+        for sender, txs in grouped.items():
+            ordered = sorted(
+                txs,
+                key=lambda tx: (tx.nonce, getattr(tx, "fee", 0), getattr(tx, "amount", 0)),
+            )
+            sender_groups.append((
+                max(getattr(tx, "fee", 0) for tx in ordered),
+                sender,
+                ordered,
+            ))
+
+        sender_groups.sort(key=lambda item: item[0], reverse=True)
+
+        chosen = []
+        total_size = 0
+        for _, _, txs in sender_groups:
+            for tx in txs:
+                tx_size = len(self._serialize_transaction_for_size(tx))
+                if len(chosen) >= self.MAX_BLOCK_TRANSACTIONS:
+                    break
+                if total_size + tx_size > self.MAX_BLOCK_SIZE:
+                    continue
+                chosen.append(tx)
+                total_size += tx_size
+            if len(chosen) >= self.MAX_BLOCK_TRANSACTIONS:
+                break
+
+        return chosen
 
     def create_genesis_block(self):
         block = Block(
@@ -34,9 +89,10 @@ class Blockchain:
         )
         block.mine()
         self.blocks = [block]
+        self.save_to_file()
         return block
 
-    def get_balances_snapshot(self, blocks):
+    def get_balances_snapshot(self, blocks, pending_transactions=None):
         balances = {}
         for block in blocks:
             for tx in block.transactions:
@@ -45,6 +101,14 @@ class Blockchain:
                 else:
                     balances[tx.sender] = balances.get(tx.sender, 0) - (tx.amount + tx.fee)
                     balances[tx.recipient] = balances.get(tx.recipient, 0) + tx.amount
+
+        if pending_transactions:
+            for tx in pending_transactions:
+                if tx.sender == "coinbase":
+                    continue
+                balances[tx.sender] = balances.get(tx.sender, 0) - (tx.amount + tx.fee)
+                balances[tx.recipient] = balances.get(tx.recipient, 0) + tx.amount
+
         return balances
 
     def get_sender_nonces(self, blocks):
@@ -74,35 +138,51 @@ class Blockchain:
     def _apply_transaction_balances(self, balances, tx, sender_nonces=None):
         if tx.sender == "coinbase":
             balances[tx.recipient] = balances.get(tx.recipient, 0) + tx.amount
-            return True
+            return True, None
 
         if getattr(tx, "public_key_hex", None) and getattr(tx, "signature", None):
             if not tx.verify_signature():
-                return False
+                return False, "transaction signature is invalid"
 
         if sender_nonces is not None:
             expected_nonce = sender_nonces.get(tx.sender, 0)
             if tx.nonce != expected_nonce:
-                return False
+                return False, f"nonce mismatch for {tx.sender}: expected {expected_nonce}, got {tx.nonce}"
             sender_nonces[tx.sender] = expected_nonce + 1
 
         total_cost = tx.amount + tx.fee
         if balances.get(tx.sender, 0) < total_cost:
-            return False
+            return False, f"insufficient funds for {tx.sender}: needs {total_cost}, has {balances.get(tx.sender, 0)}"
 
         balances[tx.sender] = balances.get(tx.sender, 0) - total_cost
         balances[tx.recipient] = balances.get(tx.recipient, 0) + tx.amount
-        return True
+        return True, None
 
     def _apply_block_transactions(self, block, balances, sender_nonces=None):
-        if not self._is_valid_coinbase_transaction(block.transactions):
-            return False
+        for tx in block.transactions:
+            if tx.sender == "coinbase":
+                continue
+            if getattr(tx, "public_key_hex", None) and getattr(tx, "signature", None):
+                if not tx.verify_signature():
+                    return False, "transaction signature is invalid"
 
         for tx in block.transactions:
-            if not self._apply_transaction_balances(balances, tx, sender_nonces):
-                return False
+            if tx.sender == "coinbase":
+                continue
+            ok, reason = self._apply_transaction_balances(balances, tx, sender_nonces)
+            if not ok:
+                return False, reason or "transaction validation failed"
 
-        return True
+        if not self._is_valid_coinbase_transaction(block.transactions):
+            return False, "coinbase transaction is invalid"
+
+        coinbase_tx = next((tx for tx in block.transactions if tx.sender == "coinbase"), None)
+        if coinbase_tx is not None:
+            ok, reason = self._apply_transaction_balances(balances, coinbase_tx, sender_nonces)
+            if not ok:
+                return False, reason or "coinbase transaction validation failed"
+
+        return True, None
 
     def _validate_block_structure(self, block, previous_hash, expected_index):
         if block is None:
@@ -125,9 +205,9 @@ class Blockchain:
             self._validate_block_structure(block, previous_hash, len(self.blocks))
             balances = self.get_balances_snapshot(self.blocks)
             sender_nonces = self.get_sender_nonces(self.blocks) or {}
-            valid = self._apply_block_transactions(block, balances, sender_nonces)
+            valid, reason = self._apply_block_transactions(block, balances, sender_nonces)
             if not valid:
-                return False, "block transactions are invalid for current chain state"
+                return False, reason or "block transactions are invalid for current chain state"
             return True, None
         except BlockchainValidationError as exc:
             return False, str(exc)
@@ -139,10 +219,15 @@ class Blockchain:
         self.blocks.append(block)
         if len(self.blocks) % self.difficulty_adjustment_interval == 0:
             self.adjust_difficulty()
+        self.save_to_file()
         return block
 
     def mine_block(self, miner_address, transactions):
-        fees = sum(getattr(tx, "fee", 0) for tx in transactions)
+        selected_transactions = self.select_transactions_for_block(transactions)
+        if len(selected_transactions) > self.MAX_BLOCK_TRANSACTIONS:
+            selected_transactions = selected_transactions[: self.MAX_BLOCK_TRANSACTIONS]
+
+        fees = sum(getattr(tx, "fee", 0) for tx in selected_transactions)
         coinbase_tx = Transaction(
             sender="coinbase",
             recipient=miner_address,
@@ -150,7 +235,22 @@ class Blockchain:
             fee=0,
             nonce=0,
         )
-        all_transactions = [coinbase_tx] + list(transactions)
+        all_transactions = [coinbase_tx] + list(selected_transactions)
+
+        coinbase_size = len(self._serialize_transaction_for_size(coinbase_tx))
+        if coinbase_size + sum(len(self._serialize_transaction_for_size(tx)) for tx in selected_transactions) > self.MAX_BLOCK_SIZE:
+            selected_transactions = []
+            all_transactions = [coinbase_tx]
+            fees = 0
+            coinbase_tx = Transaction(
+                sender="coinbase",
+                recipient=miner_address,
+                amount=BLOCK_REWARD,
+                fee=0,
+                nonce=0,
+            )
+            all_transactions = [coinbase_tx]
+
         previous_hash = self.blocks[-1].hash
         block = Block(
             index=len(self.blocks),
@@ -166,13 +266,13 @@ class Blockchain:
 
     def _is_valid_chain(self, blocks):
         if not blocks:
-            return False, "chain is empty"
+            return ValidationResult(False, "chain is empty")
         if blocks[0].index != 0:
-            return False, "genesis block index is not 0"
+            return ValidationResult(False, "genesis block index is not 0")
         if blocks[0].previous_hash != "0" * 64:
-            return False, "genesis previous_hash is invalid"
+            return ValidationResult(False, "genesis previous_hash is invalid")
         if blocks[0].transactions:
-            return False, "genesis block must be empty"
+            return ValidationResult(False, "genesis block must be empty")
 
         balances = {}
         sender_nonces = {}
@@ -181,11 +281,12 @@ class Blockchain:
             try:
                 self._validate_block_structure(block, previous_hash, idx)
             except BlockchainValidationError as exc:
-                return False, str(exc)
-            if not self._apply_block_transactions(block, balances, sender_nonces):
-                return False, "transaction validation failed while replaying chain"
+                return ValidationResult(False, str(exc))
+            valid, reason = self._apply_block_transactions(block, balances, sender_nonces)
+            if not valid:
+                return ValidationResult(False, reason or "transaction validation failed while replaying chain")
 
-        return True, None
+        return ValidationResult(True, None)
 
     def validate_chain(self):
         return self._is_valid_chain(self.blocks)
@@ -203,13 +304,19 @@ class Blockchain:
         if self.total_work(candidate_blocks) <= self.total_work(self.blocks):
             return False, "candidate chain has insufficient total work"
         self.blocks = candidate_blocks
+        self.save_to_file()
         return True, "chain replaced successfully"
 
-    def balance_of(self, address):
-        return self.get_balances_snapshot(self.blocks).get(address, 0)
+    def balance_of(self, address, pending_transactions=None):
+        return self.get_balances_snapshot(self.blocks, pending_transactions=pending_transactions).get(address, 0)
 
     def save_to_file(self, path=None):
         target = path or self.chain_path
+        if target is None:
+            return None
+        directory = os.path.dirname(target)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         payload = {
             "difficulty": self.difficulty,
             "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
@@ -258,6 +365,11 @@ class Blockchain:
 
         if not self.blocks:
             self.create_genesis_block()
+            return self
+
+        valid, _ = self._is_valid_chain(self.blocks)
+        if not valid:
+            self.create_genesis_block()
         return self
 
     def _serialize_block(self, block):
@@ -276,6 +388,7 @@ class Blockchain:
         if len(self.blocks) < self.difficulty_adjustment_interval:
             return self.difficulty
 
+        original_difficulty = self.difficulty
         latest = self.blocks[-1]
         previous = self.blocks[-self.difficulty_adjustment_interval]
         elapsed = latest.timestamp - previous.timestamp
@@ -290,5 +403,8 @@ class Blockchain:
         if any(block.difficulty != self.difficulty for block in self.blocks[-self.difficulty_adjustment_interval:]):
             for block in self.blocks[-self.difficulty_adjustment_interval:]:
                 block.difficulty = self.difficulty
+
+        if self.difficulty != original_difficulty:
+            self.save_to_file()
 
         return self.difficulty

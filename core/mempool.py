@@ -27,14 +27,23 @@ class Mempool:
         if not is_sig_valid:
             return False, "Invalid transaction signature."
 
-        pending_for_sender = [t for t in self.transactions if t.sender == tx.sender]
+        pending_for_sender = sorted(
+            [t for t in self.transactions if t.sender == tx.sender],
+            key=lambda t: t.nonce,
+        )
         total_cost = tx.amount + tx.fee
         pending_amount = sum(t.amount + t.fee for t in pending_for_sender)
 
         if current_balance < (pending_amount + total_cost):
             return False, "Insufficient funds including pending mempool transactions."
 
-        expected_nonce = current_nonce + len(pending_for_sender)
+        expected_nonce = current_nonce
+        for pending in pending_for_sender:
+            if pending.nonce == expected_nonce:
+                expected_nonce += 1
+            elif pending.nonce > expected_nonce:
+                break
+
         if tx.nonce != expected_nonce:
             return False, f"Invalid nonce. Expected {expected_nonce}, got {tx.nonce}."
 
