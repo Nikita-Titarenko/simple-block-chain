@@ -237,20 +237,6 @@ class Blockchain:
         )
         all_transactions = [coinbase_tx] + list(selected_transactions)
 
-        coinbase_size = len(self._serialize_transaction_for_size(coinbase_tx))
-        if coinbase_size + sum(len(self._serialize_transaction_for_size(tx)) for tx in selected_transactions) > self.MAX_BLOCK_SIZE:
-            selected_transactions = []
-            all_transactions = [coinbase_tx]
-            fees = 0
-            coinbase_tx = Transaction(
-                sender="coinbase",
-                recipient=miner_address,
-                amount=BLOCK_REWARD,
-                fee=0,
-                nonce=0,
-            )
-            all_transactions = [coinbase_tx]
-
         previous_hash = self.blocks[-1].hash
         block = Block(
             index=len(self.blocks),
