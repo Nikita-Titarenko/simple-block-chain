@@ -240,6 +240,28 @@ class TestMerkleAndBlock(unittest.TestCase):
         self.assertFalse(node.receive_transaction(second)["accepted"])
         node.shutdown()
 
+    def test_balance_endpoint_includes_pending_mempool_transactions(self):
+        import urllib.request
+
+        from core.wallet import Wallet
+        from network.node import Node
+
+        node = Node(port=5028, peers=[], difficulty=1)
+        sender = Wallet()
+        recipient = Wallet()
+        node.wallets = [sender, recipient]
+        node.blockchain.mine_block(sender.address, [])
+
+        tx = sender.create_transaction(recipient.address, 10, 0, 0)
+        self.assertTrue(node.receive_transaction(tx)["accepted"])
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{node.port}/balance?address={sender.address}") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        expected = node.blockchain.balance_of(sender.address, pending_transactions=node.mempool)
+        self.assertEqual(payload["balance"], expected)
+        node.shutdown()
+
     def test_apply_block_transactions_reports_specific_validation_error(self):
         blockchain = Blockchain(difficulty=1, difficulty_adjustment_interval=10, target_block_time=10)
         tx = Transaction("alice", "bob", 5, 1, 0, signature="00" * 32, public_key_hex="00" * 32)

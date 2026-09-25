@@ -52,7 +52,7 @@ class NodeRequestHandler(BaseHTTPRequestHandler):
             if not node.address_exists(address):
                 self._send_json(404, {"accepted": False, "reason": "address not found"})
                 return
-            balance = node.blockchain.balance_of(address)
+            balance = node.blockchain.balance_of(address, pending_transactions=node.mempool)
             self._send_json(200, {"address": address, "balance": balance})
             return
 
